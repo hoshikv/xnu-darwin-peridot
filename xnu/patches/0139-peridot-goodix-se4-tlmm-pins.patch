@@ -1,0 +1,89 @@
+--- a/bsd/dev/peridot_touch.c
++++ b/bsd/dev/peridot_touch.c
+@@ -115,7 +115,9 @@
+ 	vm_offset_t gcc;      /* GCC + 0x52000 (branch enable votes) */
+ 	vm_offset_t gcc_rcg;  /* GCC + 0x18000 (SE4 RCG + halt) */
+ 	vm_offset_t gcc_ahb;  /* GCC + 0x23000 (wrapper AHB halts) */
+-	/* peridot.dts xiaomi_touch: goodix,reset-gpio <0x16b 0x80>, irq <0x16b 0x81>. */
++	/* Linux pinctrl: SE4 MOSI/MISO/SCLK/CS use GPIO17/16/18/19. */
++	vm_offset_t gpio16, gpio17, gpio18, gpio19;
++	/* peridot.dts xiaomi_touch: reset GPIO128, IRQ GPIO129. */
+ 	vm_offset_t gpio128, gpio129;
+ 	bool started, dead;
+ 	int irq_hint;
+@@ -171,6 +173,10 @@
+ touch_gpio_base(unsigned pin)
+ {
+ 	switch (pin) {
++	case 16: return st.gpio16;
++	case 17: return st.gpio17;
++	case 18: return st.gpio18;
++	case 19: return st.gpio19;
+ 	case 128: return st.gpio128;
+ 	case 129: return st.gpio129;
+ 	default: return 0;
+@@ -195,6 +201,23 @@
+ 	touch_wr(base, 0, cfg);
+ }
+ 
++/* Match the Linux a90000.spi default pinctrl state (Cliffs TLMM):
++ * GPIO17=SE4_L1 MOSI, GPIO16=SE4_L0 MISO, GPIO18=SE4_L2 SCLK,
++ * GPIO19=SE4_L3 CS. Cliffs PINGROUP selects each first alternate function
++ * with mux value 1; the DT sets 6 mA drive and disables bias on all four.
++ */
++static void
++touch_spi_pins(void)
++{
++	touch_gpio(17, 1, 0, 2, false, false);
++	touch_gpio(16, 1, 0, 2, false, false);
++	touch_gpio(18, 1, 0, 2, false, false);
++	touch_gpio(19, 1, 0, 2, false, false);
++	printf("PERIDOT TOUCH: SE4 pinmux cfg g16=%#x g17=%#x g18=%#x g19=%#x\n",
++	    touch_rd(st.gpio16, 0), touch_rd(st.gpio17, 0),
++	    touch_rd(st.gpio18, 0), touch_rd(st.gpio19, 0));
++}
++
+ static bool
+ touch_clocks(void)
+ {
+@@ -663,11 +686,21 @@
+ 	printf("PERIDOT TOUCH: map gcc_rcg=%#lx\n", (unsigned long)st.gcc_rcg);
+ 	st.gcc_ahb = ml_io_map(TOUCH_GCC_PA + GCC_AHB_OFF, 0x1000);
+ 	printf("PERIDOT TOUCH: map gcc_ahb=%#lx\n", (unsigned long)st.gcc_ahb);
++	st.gpio16 = ml_io_map(TOUCH_TLMM_PA + 16u * 0x1000u, 0x1000);
++	printf("PERIDOT TOUCH: map gpio16=%#lx\n", (unsigned long)st.gpio16);
++	st.gpio17 = ml_io_map(TOUCH_TLMM_PA + 17u * 0x1000u, 0x1000);
++	printf("PERIDOT TOUCH: map gpio17=%#lx\n", (unsigned long)st.gpio17);
++	st.gpio18 = ml_io_map(TOUCH_TLMM_PA + 18u * 0x1000u, 0x1000);
++	printf("PERIDOT TOUCH: map gpio18=%#lx\n", (unsigned long)st.gpio18);
++	st.gpio19 = ml_io_map(TOUCH_TLMM_PA + 19u * 0x1000u, 0x1000);
++	printf("PERIDOT TOUCH: map gpio19=%#lx\n", (unsigned long)st.gpio19);
+ 	st.gpio128 = ml_io_map(TOUCH_TLMM_PA + 128u * 0x1000u, 0x1000);
+ 	printf("PERIDOT TOUCH: map gpio128=%#lx\n", (unsigned long)st.gpio128);
+ 	st.gpio129 = ml_io_map(TOUCH_TLMM_PA + 129u * 0x1000u, 0x1000);
+ 	printf("PERIDOT TOUCH: map gpio129=%#lx\n", (unsigned long)st.gpio129);
+-	if (!st.se || !st.gcc || !st.gcc_rcg || !st.gcc_ahb || !st.gpio128 || !st.gpio129) {
++	if (!st.se || !st.gcc || !st.gcc_rcg || !st.gcc_ahb ||
++	    !st.gpio16 || !st.gpio17 || !st.gpio18 || !st.gpio19 ||
++	    !st.gpio128 || !st.gpio129) {
+ 		printf("PERIDOT TOUCH: MMIO mapping failed\n");
+ 		goto out;
+ 	}
+@@ -678,6 +711,9 @@
+ 		    touch_rd(st.gcc, GCC_SE_VOTE), touch_rd(st.gcc_rcg, GCC_SE4_CMD + 4u),
+ 		    touch_rd(st.gcc_ahb, GCC_M_AHB_HALT), touch_rd(st.gcc_ahb, GCC_S_AHB_HALT),
+ 		    touch_rd(st.gcc_rcg, GCC_SE4_HALT), touch_rd(st.gpio128, 4), touch_rd(st.gpio129, 4));
++		printf("PERIDOT TOUCH: stage1 SPI pin cfg g16=%#x g17=%#x g18=%#x g19=%#x\n",
++		    touch_rd(st.gpio16, 0), touch_rd(st.gpio17, 0),
++		    touch_rd(st.gpio18, 0), touch_rd(st.gpio19, 0));
+ 		goto out;
+ 	}
+ 	if (!touch_clocks()) {
+@@ -690,6 +726,7 @@
+ 	if (!touch_se_init()) {
+ 		goto out;
+ 	}
++	touch_spi_pins();
+ 	printf("PERIDOT TOUCH: TLMM reset(gpio128)=%#x irq(gpio129)=%#x; voting rails through RPMh\n",
+ 	    touch_rd(st.gpio128, 4), touch_rd(st.gpio129, 4));
+ 	/* Keep IRQ as an input; power the panel in the vendor Linux order. */
