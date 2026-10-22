@@ -1,0 +1,124 @@
+--- a/bsd/dev/peridot_touch.c
++++ b/bsd/dev/peridot_touch.c
+@@ -54,6 +54,7 @@
+ #define GOODIX_SPI_READ_PREFIX 8u
+ #define GOODIX_HEAD_LEN  8u
+ #define GOODIX_POINT_LEN 8u
++#define GOODIX_PRE_READ_LEN (GOODIX_HEAD_LEN + 2u * GOODIX_POINT_LEN + 2u)
+ 
+ #define SE_STATUS       0x040u
+ #define SE_MCLK         0x048u
+@@ -410,14 +411,12 @@
+ 		if (n > 8u || n * 2u > len - 2u - p) return EIO;
+ 		p += n * 2u;
+ 	}
+-	/* misc prefix through touch_data_addr/head/point sizes */
+-	if (p + 130u + 20u > len - 2u) return EIO;
+-	/* packed goodix_ic_info_misc: 130 bytes; other begins with a 20-byte layout. */
++	if (p + 122u + 20u > len - 2u) return EIO;
+ 	st.touch_addr = touch_le32(d + p + 44u);
+ 	st.touch_head_len = touch_le16(d + p + 48u);
+ 	st.point_len = touch_le16(d + p + 50u);
+-	st.screen_x = touch_le16(d + p + 130u + 16u);
+-	st.screen_y = touch_le16(d + p + 130u + 18u);
++	st.screen_x = touch_le16(d + p + 122u + 16u);
++	st.screen_y = touch_le16(d + p + 122u + 18u);
+ 	if (!st.touch_addr || st.touch_head_len != GOODIX_HEAD_LEN ||
+ 	    st.point_len != GOODIX_POINT_LEN || !st.screen_x || !st.screen_y) return EIO;
+ 	return 0;
+@@ -447,7 +446,7 @@
+ 	uint8_t buf[90];
+ 	int x[TOUCH_MAX] = {0}, y[TOUCH_MAX] = {0};
+ 	uint32_t mask = 0;
+-	int err = touch_read(st.touch_addr, buf, GOODIX_HEAD_LEN);
++	int err = touch_read(st.touch_addr, buf, GOODIX_PRE_READ_LEN);
+ 	if (err) {
+ 		return err;
+ 	}
+@@ -459,7 +458,7 @@
+ 	}
+ 	if (!(buf[0] & 0x80u)) {
+ 		if (buf[0] & 0x40u) {
+-			unsigned request = buf[2] & 15u;
++			unsigned request = buf[2];
+ 			err = touch_goodix_ack();
+ 			if (!err && request == 3u) {
+ 				touch_report(0, st.x, st.y);
+@@ -471,31 +470,33 @@
+ 			}
+ 			return err ? err : ENOTSUP;
+ 		}
+-		return 0; /* no new touch frame: retain current contacts */
++		return touch_goodix_ack();
+ 	}
+ 	unsigned n = buf[2] & 15u;
+ 	if (n > TOUCH_MAX) {
+ 		(void)touch_goodix_ack();
+ 		return EIO;
+ 	}
+-	if (n) {
++	if (n > 2u) {
+ 		err = touch_read(st.touch_addr + GOODIX_HEAD_LEN,
+ 		    buf + GOODIX_HEAD_LEN, n * GOODIX_POINT_LEN + 2u);
+ 		if (err) {
+ 			return err;
+ 		}
+-		if (!touch_checksum(buf + GOODIX_HEAD_LEN, n * GOODIX_POINT_LEN + 2u)) {
+-			(void)touch_goodix_ack();
+-			return EIO;
+-		}
++	}
++	if (n && !touch_checksum(buf + GOODIX_HEAD_LEN, n * GOODIX_POINT_LEN + 2u)) {
++		(void)touch_goodix_ack();
++		return EIO;
+ 	}
+ 	for (unsigned i = 0; i < n; ++i) {
+ 		const uint8_t *p = buf + GOODIX_HEAD_LEN + i * GOODIX_POINT_LEN;
+ 		unsigned id = p[0] >> 4;
+ 		unsigned px = touch_le16(p + 2), py = touch_le16(p + 4);
+-		/* Low nibble 1/3 denotes pen data in the vendor parser. */
+-		if ((p[0] & 15u) == 1u || (p[0] & 15u) == 3u || id >= TOUCH_MAX ||
+-		    (mask & (1u << id)) || px > st.screen_x || py > st.screen_y) {
++		if ((p[0] & 15u) == 1u || (p[0] & 15u) == 3u) {
++			continue;
++		}
++		if (id >= TOUCH_MAX || (mask & (1u << id)) ||
++		    px > st.screen_x || py > st.screen_y) {
+ 			(void)touch_goodix_ack();
+ 			return EIO;
+ 		}
+--- a/iokit/Kernel/arm/hid/PeridotHID.cpp
++++ b/iokit/Kernel/arm/hid/PeridotHID.cpp
+@@ -393,7 +393,6 @@
+ 	virtual UInt32 getProductID() APPLE_KEXT_OVERRIDE { return 2; }
+ private:
+ 	IOLock *fLock;
+-	int fLogicalW, fLogicalH, fOffX, fOffY;
+ 	bool fDown[PERIDOT_TOUCH_FINGERS];
+ 	bool fEdge[PERIDOT_TOUCH_FINGERS];
+ 	IOFixed fX[PERIDOT_TOUCH_FINGERS];
+@@ -458,12 +457,6 @@
+ 	if (!fLock || !IOHIDEventService::start(provider)) {
+ 		return false;
+ 	}
+-	int native = 0;
+-	PE_parse_boot_argn("peridotfb_native", &native, sizeof(native));
+-	fLogicalW = native ? 1220 : 1125;
+-	fLogicalH = native ? 2712 : 2436;
+-	fOffX = (fLogicalW - 1220) / 2;
+-	fOffY = (fLogicalH - 2712) / 2;
+ 	/* The digitizer covers the main display (backboardd maps it 1:1). */
+ 	setProperty("DisplayIntegrated", kOSBooleanTrue);
+ 	setProperty("SurfaceWidth", (unsigned long long)(68 << 16), 32);	/* mm, 16.16 */
+@@ -489,9 +482,8 @@
+ 
+ 	IOLockLock(fLock);
+ 	bool was = fDown[finger];
+-	/* Panel pixels -> the presented 1125x2436 display (PeridotFramebuffer.cpp). */
+-	IOFixed nx = (IOFixed)(((int64_t)(x + fOffX) << 16) / fLogicalW);
+-	IOFixed ny = (IOFixed)(((int64_t)(y + fOffY) << 16) / fLogicalH);
++	IOFixed nx = (IOFixed)(((int64_t)x << 16) / 1220);
++	IOFixed ny = (IOFixed)(((int64_t)y << 16) / 2712);
+ 	if (nx < 0) {
+ 		nx = 0;
+ 	} else if (nx > (1 << 16)) {
