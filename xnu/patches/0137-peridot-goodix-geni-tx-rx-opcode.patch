@@ -1,0 +1,10 @@
+--- a/bsd/dev/peridot_touch.c
++++ b/bsd/dev/peridot_touch.c
+@@ -104,6 +104,6 @@
+ #define SPI_TX_ONLY     (1u << 27)
+ #define SPI_RX_ONLY     (2u << 27)
+-#define SPI_TX_RX       (SPI_TX_ONLY | SPI_RX_ONLY)
++#define SPI_TX_RX       (7u << 27)
+ #define M_CMD_DONE      (1u << 0)
+ 
+ static struct {
