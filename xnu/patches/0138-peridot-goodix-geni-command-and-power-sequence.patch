@@ -1,0 +1,122 @@
+--- a/bsd/dev/peridot_touch.c
++++ b/bsd/dev/peridot_touch.c
+@@ -48,6 +48,7 @@
+ #define TOUCH_MAX        10u
+ #define GOODIX_FW_VERSION_ADDR 0x10014u
+ #define GOODIX_IC_INFO_ADDR    0x10070u
++#define GOODIX_BOOTOPTION_ADDR  0x10000u
+ #define GOODIX_INFO_MAX        1024u
+ #define GOODIX_SPI_READ        0xf1u
+ #define GOODIX_SPI_WRITE       0xf0u
+@@ -80,6 +81,8 @@
+ #define SE_RX_LAST      (1u << 27)
+ #define SE_TX_WM_IRQ    (1u << 30)
+ #define SE_DONE         (1u << 0)
++#define SE_CANCEL_DONE  (1u << 4)
++#define SE_ABORT_DONE   (1u << 5)
+ #define SE_NACK         (1u << 10)
+ #define SE_ERRORS       (0x3eu | (1u << 9) | (1u << 10) | (1u << 12) | \
+                          (1u << 13) | (3u << 24) | (3u << 28))
+@@ -104,7 +107,7 @@
+ #define SE_SPI_PRE_POST_CMD_DLY 0x274u
+ #define SPI_TX_ONLY     (1u << 27)
+ #define SPI_RX_ONLY     (2u << 27)
+-#define SPI_TX_RX       (7u << 27)
++#define SPI_TX_RX       (SPI_TX_ONLY | SPI_RX_ONLY)
+ #define M_CMD_DONE      (1u << 0)
+ 
+ static struct {
+@@ -236,15 +239,26 @@
+ static void
+ touch_abort(void)
+ {
+-	touch_wr(st.se, SE_CTRL, 2); /* abort M command, release held bus */
++	/* Follow GENI recovery order: cancel the command, abort only if needed. */
++	touch_wr(st.se, SE_CTRL, 1u << 2);
+ 	bool done = false;
+ 	for (unsigned i = 0; i < 5000; ++i) {
+-		if (touch_rd(st.se, SE_IRQ) & (1u << 5)) {
++		if (touch_rd(st.se, SE_IRQ) & SE_CANCEL_DONE) {
+ 			done = true;
+ 			break;
+ 		}
+ 		delay(1);
+ 	}
++	if (!done) {
++		touch_wr(st.se, SE_CTRL, 1u << 1);
++		for (unsigned i = 0; i < 5000; ++i) {
++			if (touch_rd(st.se, SE_IRQ) & SE_ABORT_DONE) {
++				done = true;
++				break;
++			}
++			delay(1);
++		}
++	}
+ 	if (!done || !touch_wait_clear(st.se, SE_STATUS, 1u)) {
+ 		st.dead = true;
+ 		printf("PERIDOT TOUCH: abort failed status=%#x irq=%#x; stopping\n",
+@@ -363,6 +377,26 @@
+ 	return touch_spi_xfer(5u + len, false);
+ }
+ 
++/* Match the vendor Berlin-D power-on handshake before reading IC info. */
++static int
++touch_goodix_confirm(void)
++{
++	static const uint8_t confirm[8] = { 0xaa, 0xaa, 0xaa, 0xaa,
++	    0xaa, 0xaa, 0xaa, 0xaa };
++	uint8_t response[sizeof(confirm)];
++	for (unsigned retry = 0; retry < 3; ++retry) {
++		int err = touch_write(GOODIX_BOOTOPTION_ADDR, confirm, sizeof(confirm));
++		if (!err) {
++			err = touch_read(GOODIX_BOOTOPTION_ADDR, response, sizeof(response));
++		}
++		if (!err && memcmp(confirm, response, sizeof(confirm)) == 0) {
++			return 0;
++		}
++		touch_wait(5);
++	}
++	return EIO;
++}
++
+ static int
+ touch_goodix_ack(void)
+ {
+@@ -658,24 +692,28 @@
+ 	}
+ 	printf("PERIDOT TOUCH: TLMM reset(gpio128)=%#x irq(gpio129)=%#x; voting rails through RPMh\n",
+ 	    touch_rd(st.gpio128, 4), touch_rd(st.gpio129, 4));
+-	/* Keep the IC in reset while its rails settle; IRQ stays an input. */
++	/* Keep IRQ as an input; power the panel in the vendor Linux order. */
+ 	touch_gpio(129, 0, 3, 3, false, false); /* IRQ input, 8 mA, pull-up */
+-	touch_gpio(128, 0, 3, 3, true, false);
+-	/* peridot.dts xiaomi_touch: avdd-supply ldob13 3.3 V, vdd-supply ldob23 1.8 V. */
+-	int power_error = peridot_rpmh_vreg_enable("ldob13", 3300);
++	/* peridot.dts: vdd-supply ldob23 (IOVDD 1.8 V), avdd-supply ldob13 (3.3 V). */
++	int power_error = peridot_rpmh_vreg_enable("ldob23", 1800);
+ 	if (!power_error) {
+-		power_error = peridot_rpmh_vreg_enable("ldob23", 1800);
++		touch_wait(3); /* vendor brl_power_on: settle IOVDD before AVDD */
++		power_error = peridot_rpmh_vreg_enable("ldob13", 3300);
+ 	}
+ 	if (power_error) {
+ 		printf("PERIDOT TOUCH: RPMh rail enable failed %d; probes skipped\n", power_error);
+ 		goto out;
+ 	}
+-	touch_wait(10); /* conservative rail settling; not a DT timing value */
+-	/* Goodix controller reset: assert low, then allow firmware to start. */
++	/* Vendor Goodix reset: assert low 15 ms, release, then allow 100 ms boot. */
+ 	touch_gpio(128, 0, 3, 3, true, false);
+-	touch_wait(2);
++	touch_wait(15);
+ 	touch_gpio(128, 0, 3, 3, true, true);
+-	touch_wait(300);
++	touch_wait(100);
++	int confirm_error = touch_goodix_confirm();
++	if (confirm_error) {
++		printf("PERIDOT TOUCH: Berlin-D device-confirm failed %d; probes skipped\n", confirm_error);
++		goto out;
++	}
+ 	uint8_t version[28], info_len_buf[2], info[GOODIX_INFO_MAX];
+ 	int ge = touch_read(GOODIX_FW_VERSION_ADDR, version, sizeof(version));
+ 	bool version_ok = !ge && touch_checksum(version, sizeof(version)) &&
