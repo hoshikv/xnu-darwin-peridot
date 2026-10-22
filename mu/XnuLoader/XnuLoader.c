@@ -115,7 +115,7 @@
  * peridotusb=2 starts the USB device-mode gadget (ECM) once the kernel is up;
  * cpus=8 brings up all eight cores (3x A520 + 4x A720 + 1x X4, one
  * homogeneous cluster; PERIDOT_SMP_MAX_CPUS is 8). */
-#define BOOTARG_STRING          "-v -noprogress keepsyms=1 debug=0x14e serial=3 peridotusb=2 cpus=8 rd=ufsroot0 ufsrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 wdt=-1 peridotfb_hz=30 peridotfb_force_on=1 peridotfb_noconsole=1 peridotfb_default=1080 peridotlogpace=30000 peridotscan=backboardd,SpringBoard,bluetoothd,fairplayd.H2,xpcproxy peridotsample=-"
+#define BOOTARG_STRING          "-v -noprogress keepsyms=1 debug=0x14e serial=3 peridotusb=2 peridottouch=1 peridottouchstage=4 peridottouchdelay=120 cpus=8 rd=ufsroot0 ufsrw=1 rootrw=1 unentitled_ios_sim_launch=1 launchd_unsecure_cache=1 wdt=-1 peridotfb_hz=30 peridotfb_force_on=1 peridotfb_noconsole=1 peridotfb_default=1080 peridotlogpace=30000 peridotscan=backboardd,SpringBoard,bluetoothd,fairplayd.H2,xpcproxy peridotsample=-"
 
 #define BOOT_LINE_LENGTH        608
 #define MAX_SEGMENTS            32
