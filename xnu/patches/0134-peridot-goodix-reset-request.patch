@@ -1,0 +1,23 @@
+--- a/bsd/dev/peridot_touch.c
++++ b/bsd/dev/peridot_touch.c
+@@ -459,9 +459,17 @@
+ 	}
+ 	if (!(buf[0] & 0x80u)) {
+ 		if (buf[0] & 0x40u) {
+-			/* Acknowledge the event handshake, but do not fake a config reply. */
+-			(void)touch_goodix_ack();
+-			return ENOTSUP;
++			unsigned request = buf[2] & 15u;
++			err = touch_goodix_ack();
++			if (!err && request == 3u) {
++				touch_report(0, st.x, st.y);
++				touch_gpio(128, 0, 3, 3, true, false);
++				touch_wait(2);
++				touch_gpio(128, 0, 3, 3, true, true);
++				touch_wait(100);
++				return 0;
++			}
++			return err ? err : ENOTSUP;
+ 		}
+ 		return 0; /* no new touch frame: retain current contacts */
+ 	}

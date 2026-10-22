@@ -1,0 +1,97 @@
+--- a/bsd/dev/peridot_touch.c
++++ b/bsd/dev/peridot_touch.c
+@@ -117,6 +117,7 @@
+ 	int irq_hint;
+ 	uint32_t touch_addr, screen_x, screen_y;
+ 	uint16_t touch_head_len, point_len;
++	unsigned stage;
+ 	uint32_t irq_status, irq_last, active;
+ 	unsigned sent, got;
+ 	int x[TOUCH_MAX], y[TOUCH_MAX];
+@@ -592,7 +593,7 @@
+ static void
+ touch_thread(void *arg, wait_result_t result)
+ {
+-	unsigned delay_s = 8;
++	unsigned delay_s = 120;
+ 	(void)arg;
+ 	(void)result;
+ 	/*
+@@ -610,7 +611,7 @@
+ 	 * after the delay for the same reason and the pages are used only below.
+ 	 */
+ 	touch_wait(delay_s * 1000u);
+-	printf("PERIDOT TOUCH: mapping TLMM/SE4\n");
++	printf("PERIDOT TOUCH: stage %u mapping TLMM/SE4\n", st.stage);
+ 	st.se = ml_io_map(TOUCH_SE_PA, 0x1000);
+ 	printf("PERIDOT TOUCH: map se=%#lx\n", (unsigned long)st.se);
+ 	st.gcc = ml_io_map(TOUCH_GCC_PA + GCC_VOTE_OFF, 0x1000);
+@@ -627,10 +628,23 @@
+ 		printf("PERIDOT TOUCH: MMIO mapping failed\n");
+ 		goto out;
+ 	}
+-	printf("PERIDOT TOUCH: before se read\n");
+-	printf("PERIDOT TOUCH: se fw=%#x\n", touch_rd(st.se, SE_FW));
+-	printf("PERIDOT TOUCH: before clocks\n");
+-	if (!touch_clocks() || !touch_se_init()) {
++	if (st.stage == 1) {
++		printf("PERIDOT TOUCH: stage1 read-only se=%#x status=%#x tx=%#x rx=%#x gcc-vote=%#x rcg=%#x m-ahb=%#x s-ahb=%#x se4=%#x reset=%#x irq=%#x\n",
++		    touch_rd(st.se, SE_FW), touch_rd(st.se, SE_STATUS),
++		    touch_rd(st.se, SE_HW_TX), touch_rd(st.se, SE_HW_RX),
++		    touch_rd(st.gcc, GCC_SE_VOTE), touch_rd(st.gcc_rcg, GCC_SE4_CMD + 4u),
++		    touch_rd(st.gcc_ahb, GCC_M_AHB_HALT), touch_rd(st.gcc_ahb, GCC_S_AHB_HALT),
++		    touch_rd(st.gcc_rcg, GCC_SE4_HALT), touch_rd(st.gpio128, 4), touch_rd(st.gpio129, 4));
++		goto out;
++	}
++	if (!touch_clocks()) {
++		goto out;
++	}
++	if (st.stage == 2) {
++		printf("PERIDOT TOUCH: stage2 clocks verified; stopped before GENI writes\n");
++		goto out;
++	}
++	if (!touch_se_init()) {
+ 		goto out;
+ 	}
+ 	printf("PERIDOT TOUCH: TLMM reset(gpio128)=%#x irq(gpio129)=%#x; voting rails through RPMh\n",
+@@ -672,8 +686,12 @@
+ 		    version_ok, ie, st.dead);
+ 		goto out;
+ 	}
+-	printf("PERIDOT TOUCH: selected Goodix BerlinD GT9916R addr=%#x head=%u point=%u raw=%ux%u, poll=10ms irq-hint=%d\n",
+-	    st.touch_addr, st.touch_head_len, st.point_len, st.screen_x, st.screen_y, st.irq_hint);
++	printf("PERIDOT TOUCH: selected Goodix BerlinD GT9916R addr=%#x head=%u point=%u raw=%ux%u stage=%u irq-hint=%d\n",
++	    st.touch_addr, st.touch_head_len, st.point_len, st.screen_x, st.screen_y, st.stage, st.irq_hint);
++	if (st.stage == 3) {
++		printf("PERIDOT TOUCH: stage3 probe passed; stopped before event polling\n");
++		goto out;
++	}
+ 	unsigned errors = 0, ticks = 0;
+ 	while (!st.dead) {
+ 		/* Optional IRQ hint still reads every 100ms, and always while down. */
+@@ -702,18 +720,22 @@
+ void
+ peridot_touch_init(void)
+ {
+-	int enabled = 1;
++	int enabled = 0;
++	int stage = 0;
+ 	thread_t thread;
+ 	if (st.started) {
+ 		return;
+ 	}
+ 	st.started = true;
+ 	(void)PE_parse_boot_argn("peridottouch", &enabled, sizeof(enabled));
++	(void)PE_parse_boot_argn("peridottouchstage", &stage, sizeof(stage));
+ 	(void)PE_parse_boot_argn("peridottouchirq", &st.irq_hint, sizeof(st.irq_hint));
+-	if (!enabled) {
+-		printf("PERIDOT TOUCH: disabled (peridottouch=0)\n");
++	if (!enabled || stage < 1 || stage > 4) {
++		printf("PERIDOT TOUCH: disabled; set peridottouch=1 and peridottouchstage=1..4\n");
+ 		return;
+ 	}
++	st.stage = (unsigned)stage;
++	printf("PERIDOT TOUCH: staged bring-up requested stage=%u\n", st.stage);
+ 	kern_return_t kr = kernel_thread_start(touch_thread, NULL, &thread);
+ 	if (kr == KERN_SUCCESS) {
+ 		thread_deallocate(thread);

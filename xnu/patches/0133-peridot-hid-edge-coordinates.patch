@@ -1,0 +1,13 @@
+--- a/iokit/Kernel/arm/hid/PeridotHID.cpp
++++ b/iokit/Kernel/arm/hid/PeridotHID.cpp
+@@ -508,8 +508,8 @@
+ 		return;
+ 	}
+ 	if (!was && down) {
+-		fEdge[finger] = x < PERIDOT_TOUCH_EDGE_PX || x > 1079 - PERIDOT_TOUCH_EDGE_PX ||
+-		    y < PERIDOT_TOUCH_EDGE_PX || y > 2399 - PERIDOT_TOUCH_EDGE_PX;
++		fEdge[finger] = x < PERIDOT_TOUCH_EDGE_PX || x >= 1220 - PERIDOT_TOUCH_EDGE_PX ||
++		    y < PERIDOT_TOUCH_EDGE_PX || y >= 2712 - PERIDOT_TOUCH_EDGE_PX;
+ 	}
+ 
+ 	collection = IOHIDEvent::digitizerEvent(now, 0, kIOHIDDigitizerTransducerTypeHand, false, 0, 0, 0);
